@@ -1,76 +1,77 @@
-const http = require("http");
-const { Server } = require("socket.io");
-const jwt = require("jsonwebtoken");
-const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
+const http = require("http")
+const { Server } = require("socket.io")
+const jwt = require("jsonwebtoken")
+const fetch = require("node-fetch")
 
 // Create HTTP server
-const server = http.createServer();
+const server = http.createServer()
 
+// Initialize Socket.IO with CORS settings
 const io = new Server(server, {
   cors: {
     origin: process.env.CORS_ORIGIN || "*",
     methods: ["GET", "POST"],
     credentials: true,
   },
-});
+})
 
 // Store active users and their connections
-const activeUsers = new Map();
-const userSockets = new Map();
-const communityMembers = new Map();
-const channelMembers = new Map();
-const typingUsers = new Map();
+const activeUsers = new Map()
+const userSockets = new Map()
+const communityMembers = new Map()
+const channelMembers = new Map()
+const typingUsers = new Map()
 
-// Verify JWT token
+// Verify JWT token from client
 const verifyToken = async (token) => {
   try {
-    const decoded = jwt.verify(token, process.env.NEXTAUTH_SECRET);
+    // Verify with your NextAuth secret
+    const decoded = jwt.verify(token, process.env.NEXTAUTH_SECRET)
     return {
       id: decoded.id || decoded.sub,
       name: decoded.name,
       email: decoded.email,
       image: decoded.picture || decoded.image,
-    };
+    }
   } catch (error) {
-    console.error("Token verification failed:", error);
-    return null;
+    console.error("Token verification failed:", error)
+    return null
   }
-};
+}
 
-// Socket.IO auth middleware (TEMPORARY BYPASS FOR TESTING)
+// Authentication middleware
 io.use(async (socket, next) => {
   try {
-    const token = socket.handshake.auth.token;
-    console.log("🔐 Received token:", token);
+    const token = socket.handshake.auth.token
 
     if (!token) {
-      console.warn("⚠️ Token missing. Allowing connection for testing.");
-      return next(); // Remove this line when enforcing auth again
+      return next(new Error("Authentication token required"))
     }
 
-    const user = await verifyToken(token);
+    const user = await verifyToken(token)
+
     if (!user) {
-      return next(new Error("Invalid authentication token"));
+      return next(new Error("Invalid authentication token"))
     }
 
-    socket.data.user = user;
-    next();
+    // Store user data in socket
+    socket.data.user = user
+    next()
   } catch (error) {
-    console.error("Socket authentication error:", error);
-    next(new Error("Authentication failed"));
+    console.error("Socket authentication error:", error)
+    next(new Error("Authentication failed"))
   }
-});
+})
 
-// WebSocket events
+// Handle connections
 io.on("connection", (socket) => {
-  const user = socket.data.user || { id: "guest", name: "Guest User", image: "" };
-  const userId = user.id;
-  const username = user.name;
-  const userImage = user.image;
+  const userId = socket.data.user.id
+  const username = socket.data.user.name
+  const userImage = socket.data.user.image
 
-  console.log(`✅ User connected: ${username} (${userId})`);
+  console.log(`User connected: ${username} (${userId})`)
 
-  // Add user to active list
+  // Add user to active users
   activeUsers.set(userId, {
     id: userId,
     name: username,
@@ -78,27 +79,34 @@ io.on("connection", (socket) => {
     status: "online",
     lastActive: new Date(),
     socketId: socket.id,
-  });
+  })
 
+  // Store socket by user ID for direct messaging
   if (!userSockets.has(userId)) {
-    userSockets.set(userId, new Set());
+    userSockets.set(userId, new Set())
   }
-  userSockets.get(userId).add(socket.id);
+  userSockets.get(userId).add(socket.id)
 
-  socket.join(`user:${userId}`);
+  // Join user's personal room
+  socket.join(`user:${userId}`)
 
+  // Broadcast user online status
   io.emit("user:status", {
     userId,
     status: "online",
     lastActive: new Date(),
-  });
+  })
 
+  // Handle joining a community
   socket.on("joinCommunity", (communityId) => {
-    console.log(`User ${username} joined community ${communityId}`);
-    socket.join(`community:${communityId}`);
+    console.log(`User ${username} joined community ${communityId}`)
 
+    // Join community room
+    socket.join(`community:${communityId}`)
+
+    // Add user to community members
     if (!communityMembers.has(communityId)) {
-      communityMembers.set(communityId, new Map());
+      communityMembers.set(communityId, new Map())
     }
     communityMembers.get(communityId).set(userId, {
       id: userId,
@@ -106,8 +114,9 @@ io.on("connection", (socket) => {
       image: userImage,
       status: "online",
       lastActive: new Date(),
-    });
+    })
 
+    // Notify community members
     socket.to(`community:${communityId}`).emit("community:member:joined", {
       communityId,
       user: {
@@ -116,18 +125,22 @@ io.on("connection", (socket) => {
         image: userImage,
         status: "online",
       },
-    });
+    })
 
-    const onlineMembers = Array.from(communityMembers.get(communityId).values());
+    // Send current online members to the user
+    const onlineMembers = Array.from(communityMembers.get(communityId).values())
     socket.emit("community:members", {
       communityId,
       members: onlineMembers,
-    });
-  });
+    })
+  })
 
+  // Handle new posts
   socket.on("newPost", async (post) => {
-    io.emit("newPost", post);
+    // Broadcast to all connected clients
+    io.emit("newPost", post)
 
+    // You could also call your API to store the post
     try {
       await fetch(`${process.env.API_URL}/api/posts`, {
         method: "POST",
@@ -136,15 +149,17 @@ io.on("connection", (socket) => {
           Authorization: `Bearer ${socket.handshake.auth.token}`,
         },
         body: JSON.stringify(post),
-      });
+      })
     } catch (error) {
-      console.error("Error saving post via API:", error);
+      console.error("Error saving post via API:", error)
     }
-  });
+  })
 
+  // Handle direct messages
   socket.on("direct:message", async (data) => {
-    const { recipientId, message } = data;
+    const { recipientId, message } = data
 
+    // Store message in database (via API call)
     try {
       const response = await fetch(`${process.env.API_URL}/api/chat/messages`, {
         method: "POST",
@@ -158,80 +173,107 @@ io.on("connection", (socket) => {
           mediaUrl: message.mediaUrl,
           mediaType: message.mediaType,
         }),
-      });
+      })
 
-      if (!response.ok) throw new Error("Failed to save message");
-
-      const savedMessage = await response.json();
-
-      if (userSockets.has(recipientId)) {
-        userSockets.get(recipientId).forEach((socketId) => {
-          io.to(socketId).emit("direct:message:new", savedMessage.message);
-        });
+      if (!response.ok) {
+        throw new Error("Failed to save message")
       }
 
-      socket.emit("direct:message:sent", savedMessage.message);
+      const savedMessage = await response.json()
+
+      // Send message to recipient if online
+      if (userSockets.has(recipientId)) {
+        userSockets.get(recipientId).forEach((socketId) => {
+          io.to(socketId).emit("direct:message:new", savedMessage.message)
+        })
+      }
+
+      // Send confirmation to sender
+      socket.emit("direct:message:sent", savedMessage.message)
     } catch (error) {
-      console.error("Error saving direct message:", error);
-      socket.emit("error", { message: "Failed to send message" });
+      console.error("Error saving direct message:", error)
+      socket.emit("error", {
+        message: "Failed to send message",
+      })
     }
-  });
+  })
 
+  // Handle disconnection
   socket.on("disconnect", () => {
-    console.log(`User disconnected: ${username} (${userId})`);
+    console.log(`User disconnected: ${username} (${userId})`)
 
+    // Remove socket from user's sockets
     if (userSockets.has(userId)) {
-      userSockets.get(userId).delete(socket.id);
+      userSockets.get(userId).delete(socket.id)
 
+      // If user has no more sockets, they're offline
       if (userSockets.get(userId).size === 0) {
+        // Update user status
         if (activeUsers.has(userId)) {
-          const userData = activeUsers.get(userId);
-          userData.status = "offline";
-          userData.lastActive = new Date();
-          activeUsers.set(userId, userData);
+          const userData = activeUsers.get(userId)
+          userData.status = "offline"
+          userData.lastActive = new Date()
+          activeUsers.set(userId, userData)
         }
 
+        // Broadcast user offline status
         io.emit("user:status", {
           userId,
           status: "offline",
           lastActive: new Date(),
-        });
+        })
 
+        // Remove user from all communities
         for (const [communityId, members] of communityMembers.entries()) {
           if (members.has(userId)) {
-            members.delete(userId);
+            members.delete(userId)
+
+            // Notify community members
             io.to(`community:${communityId}`).emit("community:member:left", {
               communityId,
               userId,
-            });
+            })
           }
         }
 
+        // Remove user from all channels
         for (const [channelId, members] of channelMembers.entries()) {
           if (members.has(userId)) {
-            members.delete(userId);
+            members.delete(userId)
+
+            // Notify channel members
             io.to(`channel:${channelId}`).emit("channel:member:left", {
               channelId,
               userId,
-            });
+            })
           }
         }
 
+        // Remove user from typing indicators
         for (const [channelId, typingMap] of typingUsers.entries()) {
           if (typingMap.has(userId)) {
-            typingMap.delete(userId);
+            typingMap.delete(userId)
+
+            // Broadcast updated typing users
             io.to(`channel:${channelId}`).emit(`channel:${channelId}:typing`, {
               channelId,
               userId,
               isTyping: false,
-            });
+            })
           }
         }
       }
     }
-  });
-});
+  })
+})
 
+ // Add to your websocket-server.js
+server.on("request", (req, res) => {
+  if (req.url === "/health") {
+    res.writeHead(200);
+    res.end("OK");
+  }
+});
 // ✅ Start the server
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
