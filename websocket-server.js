@@ -270,7 +270,8 @@ io.on("connection", (socket) => {
 })
 
 // Start the server
-const PORT = process.env.PORT || 3001
-server.listen(PORT, () => {
-  console.log(`WebSocket server running on port ${PORT}`)
-})
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`WebSocket server running on port ${PORT}`);
+});
+
